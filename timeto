@@ -1,0 +1,426 @@
+#!/bin/bash
+#########################################################################
+#                     Licensing                                         #
+#########################################################################
+# This simple program is written by Nick Julian and is free software, 
+# licensed under the GNU General Public License v.3 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY 
+# OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE 
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, 
+# TITLE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS 
+# OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER 
+# LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT  
+# OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS 
+# IN THE SOFTWARE.                                                   
+
+#########################################################################
+#                     Variable Definitions                              #
+#########################################################################
+
+# This is the file that will hold event names and associated dates
+DATAFILE=~/.timetodates
+# This specified whether to give output as a single number only or include 
+# formatted text
+VERBOSE=0
+# This s the variable that defines the format of the time output, meaning 
+# days, minutes, seconds, etc. Default is "full"
+FORMAT="full"
+
+#########################################################################
+#                     Function Definitions                              #
+#########################################################################
+
+# This function converts time in seconds to numbers of days
+function convert_seconds_to_days ()
+{
+	echo $(( (($1 / 60) / 60) / 24 ))
+}
+# This function converts time in seconds to numbers of hours
+function convert_seconds_to_hours ()
+{
+	echo $(( ($1 / 60) / 60 ))
+}
+# This function converts time in seconds to numbers of minutes
+function convert_seconds_to_minutes ()
+{
+	echo $(( $1 / 60 ))
+}
+# This function processes date input, and reconfigures it into the format we need [YYYY-MM-DD], if necessary
+function parse_date_input () 
+{
+	# This regex represents the date style we need [YYYY-MM-DD]
+	DATETEMPLATE='^[2-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]$'
+	# This regex represents US style dates separated by a dash [MM-DD-YYYY]
+	USDATETEMPLATE='^[0-1][0-9]-[0-3][0-9]-[2-9][0-9][0-9][0-9]$'
+	# This regex represents US style dates separated by a period
+	DOTDATETEMPLATE='^[0-1][0-9].[0-3][0-9].[2-9][0-9][0-9][0-9]$'
+	# If the date is already correctly formatted, just echo it:
+	if [[ $1 =~ $DATETEMPLATE ]];then
+		echo "$1"
+	# Otherwise, if it is in US dash format, reconfigure it:
+	elif [[ $1 =~ $USDATETEMPLATE ]]; then
+		IFS='-' read -r -a DATE <<< "$1"
+		echo "${DATE[2]}-${DATE[0]}-${DATE[1]}"
+	# Otherwise, if it is in US period format, reconfigure it:
+	else
+		if [[ $1 =~ $DOTDATETEMPLATE ]]; then
+			IFS='.' read -r -a DATE <<< "$1"
+			echo "${DATE[2]}-${DATE[0]}-${DATE[1]}"
+		fi
+	fi
+}
+# This function takes two parameters (event name and date) and writes them 
+# to the event file separated by a colon
+function add_date_to_data_file ()
+{
+	NAME="$1"
+	DATE="$2"
+	DATEINPUTTEMPLATE='^[2-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]$'
+	NAMEINPUTTEMPLATE='^[a-zA-Z0-9_.-]*$'
+	# Test that the name does not contain spaces
+	if [[ ! $NAME =~ $NAMEINPUTTEMPLATE ]]; then
+		echo "Error: Event name cannot contain spaces."
+		exit 1;
+	fi
+	# Test for a duplicated name in the database file	
+	while read -r line; do
+		IFS=':' read -r -a linedata <<< "$line"
+		if [ "${linedata[0]}" = "$NAME" ]; then
+			echo "Error: Duplicate entry detected. Please use a unique event name."
+			exit 1;
+		fi	
+	done < "$DATAFILE"
+	# Test that the date format is correct"
+	if [[ ! $DATE =~ $DATEINPUTTEMPLATE ]]; then
+		if [[ ! `parse_date_input $DATE` =~ $DATEINPUTTEMPLATE ]]; then
+			echo "Error: Invalid date. Please use YYYY-MM-DD/DD-MM-YYYY/MM.DD.YYYY" 
+			exit 1;
+		else
+			DATE=`parse_date_input $DATE`
+		fi	
+	fi
+	# Test that event is in future
+	INPUTDATESECONDS=`date -d $DATE +%s`
+	if [[ $(( $INPUTDATESECONDS - `date +%s` )) -lt 0 ]]; then
+		echo "Error: Event must be in future."
+		exit 1;
+	fi
+	# Add the event to database
+	echo "$NAME:$DATE" >> $DATAFILE;
+	sort $DATAFILE > ~/.timetotemp
+	cat ~/.timetotemp > $DATAFILE
+	rm -f ~/.timetotemp
+	echo "Added $NAME ($DATE) to events list."
+}
+# This function lists all the event names in the data file
+function list_events_in_datafile ()
+{
+	while read -r line; do
+		IFS=':' read -r -a linedata <<< "$line"
+		echo "${linedata[0]}: ${linedata[1]} "
+	done < "$DATAFILE"
+	echo ""
+}
+# This function removes a database entry from the file
+function remove_event_from_database ()
+{
+	FOUND="false"
+	# Clear the temp file
+	> ~/.timetotemp
+	# Read each entry in the database
+	while IFS=":" read NAME DATE; do
+		# If the event matches the queried event name, save its information
+		if [ "$NAME" = "$1" ]; then
+			FOUND="true"
+			EVENTNAME=$NAME
+			EVENTDATE=$DATE
+		# Otherwise, copy it to the temp file
+		else	
+			echo "$NAME":"$DATE" >> ~/.timetotemp
+		fi
+	done < "$DATAFILE"
+	if [ "$FOUND" = "false" ]; then
+		echo "Entry $1 not found in events."
+	# If you found the entry, confirm the user's intentions
+	else
+	    read -p "Clear $EVENTNAME from events? [y/n] " -n 1 -r REPLY
+	   	echo ""
+		# If the user cancels, write the event to the temp file
+		if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+			echo "$EVENTNAME":"$EVENTDATE" >> ~/.timetotemp
+			echo "$EVENTNAME NOT cleared."
+		else
+			echo "$EVENTNAME removed from events list."
+		fi
+	fi
+	# Overwrite the database with the contents of the temp file
+	sort ~/.timetotemp > "$DATAFILE"
+	# Remove the temp file
+	rm -f ~/.timetotemp
+}
+# This function clears all events in the event file
+function clear_all_events ()
+{
+	read -p "Clear all events? [y/n] " -n 1 -r REPLY
+	echo ""
+	if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+		echo "Cancelled."
+	else
+		> "$DATAFILE"
+		echo "Cleared."
+	fi
+}
+# This function reports the time remaining till an event specified in the database
+function report_time_from_database ()
+{
+	FOUND="false"
+	# Read each entry in the database
+	while read -r line; do
+		IFS=':' read -r -a linedata <<< "$line"
+		# If you find the specified entry, get its information
+		if [ "${linedata[0]}" = "$1" ]; then
+			FOUND="true"
+			NAME="${linedata[0]}"
+			DATE="${linedata[1]}"
+			# Find the difference in seconds between the present and the day of the event
+			date1seconds=`date -d $DATE +%s` 
+			date2seconds=`date +%s`
+			diff=$(( $date1seconds - $date2seconds ))
+			# Process and report the difference according to the user by specified options
+			if [[ $FORMAT = "days" ]];then
+				if [[ $VERBOSE = 1 ]]; then
+					echo "`convert_seconds_to_days $diff` days until $NAME"
+					exit 0;
+				else
+					echo `convert_seconds_to_days $diff`
+					exit 0;
+				fi
+			elif [[ $FORMAT = "hours" ]];then
+				if [[ $VERBOSE = 1 ]]; then
+					echo "`convert_seconds_to_hours $diff` hours until $NAME"
+					exit 0;
+				else
+					echo `convert_seconds_to_hours $diff`
+					exit 0;
+				fi
+			elif [[ $FORMAT = "minutes" ]];then
+				if [[ $VERBOSE = 1 ]]; then
+					echo "`convert_seconds_to_minutes $diff` minutes until $NAME"
+					exit 0;
+				else
+					echo `convert_seconds_to_minutes $diff`
+					exit 0;
+				fi
+			elif [[ $FORMAT = "seconds" ]];then
+				if [[ $VERBOSE = 1 ]]; then
+					echo "$diff seconds until $NAME"
+					exit 0;
+				else
+					echo $diff
+					exit 0;
+				fi	
+			elif [[ $FORMAT = "full" ]];then
+				date1seconds=`date -d $DATE +%s` 
+				date2seconds=`date +%s`
+				diff=$(( $date1seconds - $date2seconds ))
+				days=$(( $diff / 86400 ));
+				diff=$(( $diff % 86400 ));
+				hours=$(( $diff / 3600 ));
+				diff=$(( $diff % 3600 ));
+				minutes=$(( $diff / 60 ));
+				seconds=$(( $diff % 60 ));
+				echo ""$days" days, "$hours" hours, "$minutes" minutes and "$seconds" seconds until $NAME"
+				exit 0;
+			fi		
+		fi	
+	done < "$DATAFILE"
+	if [ "$FOUND" = "false" ]; then
+		echo "$1 not found in event database."
+		exit 1;
+	fi
+}
+# This function reports the time remaining till an specified date, ignoring the database
+function report_time_from_date () 
+{
+	DATE="$1"
+	# Test that event is in future
+	INPUTDATESECONDS=`date -d $DATE +%s`
+	if [[ $(( $INPUTDATESECONDS - `date +%s` )) -lt 0 ]]; then
+		echo "Error: Event must be in future."
+		exit 1;
+	fi
+	# Find the difference in seconds between the present and the day of the event
+	date1seconds=`date -d $DATE +%s` 
+	date2seconds=`date +%s`
+	diff=$(( $date1seconds - $date2seconds ))
+    # Process and report the difference according to the user by specified options
+	if [[ $FORMAT = "days" ]];then
+		if [[ $VERBOSE = 1 ]]; then
+			echo "`convert_seconds_to_days $diff` days until $DATE"
+			exit 0;
+		else
+			echo `convert_seconds_to_days $diff`
+			exit 0;
+		fi
+	elif [[ $FORMAT = "hours" ]];then
+		if [[ $VERBOSE = 1 ]]; then
+			echo "`convert_seconds_to_hours $diff` hours until $DATE"
+			exit 0;
+		else
+			echo `convert_seconds_to_hours $diff`
+			exit 0;
+		fi
+	elif [[ $FORMAT = "minutes" ]];then
+		if [[ $VERBOSE = 1 ]]; then
+			echo "`convert_seconds_to_minutes $diff` minutes until $DATE"
+			exit 0;
+		else
+			echo `convert_seconds_to_minutes $diff`
+			exit 0;
+		fi
+	elif [[ $FORMAT = "seconds" ]];then
+		if [[ $VERBOSE = 1 ]]; then
+			echo "$diff seconds until $DATE"
+			exit 0;
+		else
+			echo $diff
+			exit 0;
+		fi	
+	elif [[ $FORMAT = "full" ]];then
+		date1=$1
+		date1seconds=`date -d $date1 +%s` 
+		date2seconds=`date +%s`
+		diff=$(( $date1seconds - $date2seconds ))
+		days=$(( $diff / 86400 ));
+		diff=$(( $diff % 86400 ));
+		hours=$(( $diff / 3600 ));
+		diff=$(( $diff % 3600 ));
+		minutes=$(( $diff / 60 ));
+		seconds=$(( $diff % 60 ));
+		echo ""$days" days, "$hours" hours, "$minutes" minutes and "$seconds" seconds until $DATE"
+		exit 0;	
+	fi		
+}
+# This function reports help and options to the user
+function show_help ()
+{
+	echo "Usage: timeto [OPTIONS] [EVENT_NAME | DATE]                                 "
+	echo ""
+	echo "Reports the time remaining until a specified date, or an event from         "
+	echo "a predefined database of events. Run with DATE or EVENT_NAME and no         "
+	echo "options to get the full report of time till a specified day:                "
+	echo "timeto 12-25-2018                                                           "
+	echo ""
+	echo "Use the '-a' option to add an event day to the database:                    "
+	echo "timeto -a xmas 2018-12-25                                                   " 
+	echo ""
+	echo "Specify a time format option (d|h|m|s) to get just days, minutes, etc...:   "
+	echo "timeto -m -v xmas                                                           " 
+	echo ""
+	echo "OPTIONS:                                                                    "
+	echo "----------------------------------------------------------------------------"
+	echo "  -a [EVENT_NAME] [DATE]              Create an event in the database. Names"
+	echo "                                      are case sensitive and cannot contain " 
+	echo "                                      spaces. Date may be specified as      " 
+	echo "                                      YYYY-MM-DD, MM-DD-YYYY, or MM.DD.YYYY." 
+	echo "                                      (example: timeto -a xmas 2018-12-25)  "
+	echo "  -c                                  Clear all events in the database      "
+	echo "  -l                                  List all events in the database       "
+	echo "  -r [EVENT_NAME]                     Remove event from the database        "
+	echo "  -f                                  Show full report (days, hrs, min, sec)"
+	echo "  -d                                  Show days until day of event          "
+	echo "  -o                                  Show hours until day of event         "
+	echo "  -m                                  Show minutes until day of event       "
+    echo "  -s                                  Show seconds until day of event       "
+	echo "  -v                                  Verbose output: used with -d,-o,-m,-s "
+	echo "  -h                                  Show help                             "	
+	
+}
+
+#########################################################################
+#                          Main Program                                 #
+#########################################################################
+
+# If the database file does not exist, create it
+if [ ! -f "$DATAFILE"  ]; then
+	touch "$DATAFILE"
+fi
+# Process the main arguments
+while [[ $# -gt 0 ]]; do
+	key="$1"
+	case $key in
+		# Option for adding an event to the database
+		"-a")
+			add_date_to_data_file "$2" "$3"
+			exit 0;
+			;;
+		# Option for listing events in the database
+		"-l")
+			list_events_in_datafile
+			exit 0;
+			;;
+		# Option for removing an event from the database
+		"-r")
+			remove_event_from_database "$2"
+			exit 0;
+			;;
+		# Option for clearing the database			
+    	"-c")
+			clear_all_events
+			exit 0;
+			;;
+		# Option to show help			
+		"-h")
+			show_help
+			exit 0;
+			;;
+		# Option for verbose output
+		"-v")
+			VERBOSE=1
+			shift 
+			;;
+		# Option for listing only days until the day specified
+		"-d")
+			FORMAT="days"
+			shift
+			;;
+		# Option for listing only hours until the day specified
+		"-o")
+			FORMAT="hours"
+			shift 
+			;;
+		# Option for listing only minutes until the day specified
+		"-m")
+			FORMAT="minutes"
+			shift
+			;;
+		# Option for listing only seconds until the day specified
+		"-s")
+			FORMAT="seconds"
+			shift 
+			;;
+		# Option for listing full, verbose output
+		"-f")
+			FORMAT="full"
+			shift 
+			;;
+		*)
+			# Process the final argument, which should be a date or an event name
+			DATEINPUTTEMPLATE='^[2-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]$'
+			NAMEINPUTTEMPLATE='^[a-zA-Z0-9_.-]*$'    
+			# If the final argument looks like a date, process it as such
+			if [[ `parse_date_input "$1"` =~ $DATEINPUTTEMPLATE ]]; then
+				report_time_from_date `parse_date_input "$1"`
+			# Otherwise if the final argument looks like an event name, process it as such
+			elif [[ "$1" =~ $NAMEINPUTTEMPLATE ]]; then
+				report_time_from_database "$1"
+			# If the final argument is incomprehensible, throw an error
+			else 
+				echo "Input error."
+				echo "Usage: timeto [OPTIONS] [EVENT_NAME | DATE]"
+				echo 'For help, use "timeto -h"' 
+			exit 1;
+			fi
+			;;
+	esac
+done
